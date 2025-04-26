@@ -1,0 +1,239 @@
+name "Consumed_Apps_and_Licenses"
+rs_pt_ver 20180301
+type "policy"
+short_description "Schedule a FlexNet Manager report that generates consumed Licenses with their related Apps within an Organisation and send it as an email to one or more recipients.For more infos, please refer to (https://github.com/flexera-public/policy_templates/tree/master/operational/flexera/fnms/schedule_fnms_reports) and [docs.flexera.com/flexera/EN/Automation](https://docs.flexera.com/flexera/EN/Automation/AutomationGS.htm) to learn more."
+long_description ""
+severity "medium"
+category "Operational"
+default_frequency "weekly"
+info(
+  version: "3.2.2",
+  provider: "Flexera",
+  service: "FlexNet Manager",
+  policy_set: "Schedule Report",
+  hide_skip_approvals: "true",
+
+  skip_permissions: "true"
+)
+
+###############################################################################
+# Parameters
+###############################################################################
+
+parameter "param_fnms_host" do
+  type "string"
+  category "Policy Settings"
+  label "FlexNet Manager host"
+  description "Flexera One FlexNet Manager host"
+  allowed_values "slo.app.flexera.com", "slo.app.flexera.eu", "slo.app.flexera.au", "slo-uat.app.flexera.com", "slo-uat.app.flexera.eu", "slo-uat.app.flexera.au"
+  default "slo.app.flexera.eu"
+end
+
+parameter "param_report_id" do
+  type "string"
+  category "Policy Settings"
+  label "FlexNet Manager Report ID"
+  description "IT Asset Management Custom View ID"
+  default "1234" # Replace with the real ID of your custom view
+end
+
+parameter "param_report_title" do
+  type "string"
+  category "Policy Settings"
+  label "Report Title in the Mail"
+  description "Report header in the report result (e.g. FlexNet Manager Report)"
+  default "Liste des Applications InstallÃÂ©es"
+end
+
+parameter "param_email" do
+  type "list"
+  category "Policy Settings"
+  label "Email addresses of the recipients you wish to notify"
+  description "A list of email address(es) to notify"
+  default ["wassim@example.com"]
+end
+
+###############################################################################
+# Authentication
+###############################################################################
+
+credentials "auth_flexera" do
+  schemes "oauth2"
+  label "flexera"
+  description "Select Flexera One OAuth2 credentials."
+  tags "provider=flexera"
+end
+
+###############################################################################
+# Datasources & Scripts
+###############################################################################
+
+# Report header
+datasource "ds_itam_report_header" do
+  request do
+    auth $auth_flexera
+    verb "POST"
+    scheme "https"
+    host $param_fnms_host
+    path "/ManageSoftServices/ComplianceAPIService/ComplianceAPIService.asmx"
+    query "orgid", to_s(rs_org_id)
+    header "Content-Type", "text/xml;charset=utf-8"
+    body join(['<?xml version="1.0" encoding="utf-8"?>',
+               '<soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope" xmlns:tem="http://tempuri.org/">',
+               '  <soap:Body>',
+               '    <tem:GetCustomView>',
+               '      <tem:customViewID>', $param_report_id, '</tem:customViewID>',
+               '      <tem:rowLimit>100000</tem:rowLimit>',
+               '    </tem:GetCustomView>',
+               '  </soap:Body>',
+               '</soap:Envelope>'])
+  end
+  result do
+    encoding "xml"
+    collect xpath(response, "//choice/element[@name='SearchResults']/complexType/sequence/element") do
+      field "name", xpath(col_item, "@name")
+      field "caption", xpath(col_item, "@Caption")
+    end
+  end
+end
+
+# Report data
+datasource "ds_itam_report" do
+  request do
+    auth $auth_flexera
+    verb "POST"
+    scheme "https"
+    host $param_fnms_host
+    path "/ManageSoftServices/ComplianceAPIService/ComplianceAPIService.asmx"
+    query "orgid", to_s(rs_org_id)
+    header "Content-Type", "text/xml;charset=utf-8"
+    body join(['<?xml version="1.0" encoding="utf-8"?>',
+               '<soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope" xmlns:tem="http://tempuri.org/">',
+               '  <soap:Body>',
+               '    <tem:GetCustomView>',
+               '      <tem:customViewID>', $param_report_id, '</tem:customViewID>',
+               '      <tem:rowLimit>100000</tem:rowLimit>',
+               '    </tem:GetCustomView>',
+               '  </soap:Body>',
+               '</soap:Envelope>'])
+  end
+  result do
+    encoding "text"
+  end
+end
+
+datasource "ds_xml2json" do
+  run_script $js_xml2json, $ds_itam_report, $ds_itam_report_header
+end
+
+script "js_xml2json", type: "javascript" do
+  parameters "sXML", "header"
+  result "result"
+  code <<-EOS
+    var includeID = false;
+    var result = {};
+    result.header = [];
+
+    for (i = 0; i < header.length; i++) {
+      var item = {};
+      item.name = header[i].name;
+      item.caption = header[i].caption.length != 0 ? header[i].caption : header[i].name;
+      item.show = ((header[i].name.indexOf("ID") === header[i].name.length - 2) && (i == 0)) ? false : true;
+      result.header.push(item);
+    }
+
+    result.data = [];
+    RawData = sXML.split("<NewDataSet");
+    if (RawData.length > 1) {
+      RawData = RawData[1].split("</NewDataSet");
+      sRawData = "" + RawData[0].substr(RawData[0].indexOf(">") + 1);
+      DataCollection = sRawData.split("<SearchResults");
+
+      for (i = 0; i < DataCollection.length; i++) {
+        var row = {};
+        for (x = 0; x < result.header.length; x++) {
+          sRaw = DataCollection[i];
+          sRaw = sRaw.substr(sRaw.indexOf("<" + result.header[x].name + ">") + 2 + result.header[x].name.length);
+          sVal = sRaw.substr(0, sRaw.indexOf("</" + result.header[x].name + ">"));
+          row[result.header[x].name] = sVal;
+        }
+        result.data.push(row);
+      }
+    }
+  EOS
+end
+
+datasource "ds_json2markdowntable" do
+  run_script $js_json2markdowntable, $ds_xml2json, $param_report_title
+end
+
+script "js_json2markdowntable", type: "javascript" do
+  parameters "data", "name"
+  result "result"
+  code <<-EOS
+    var result = {};
+    result.name = name;
+    result.sResult = "";
+
+    function pad(input, times) {
+      var sRet = "";
+      for (var i = 0; i < times; i++) sRet += input;
+      return sRet;
+    }
+
+    result.sResult = "| ";
+    var sSeparator = "| ";
+    for (var x = 0; x < data.header.length; x++) {
+      if (data.header[x].show) {
+        result.sResult += data.header[x].caption + " | ";
+        sSeparator += pad('-', data.header[x].caption.length) + " | ";
+      }
+    }
+    result.sResult = result.sResult.trim() + "\\n";
+    result.sResult += sSeparator.trim() + "\\n";
+
+    var maxRows = 100;
+    for (var i = 0; i < data.data.length && i < maxRows; i++) {
+      if (data.data[i][data.header[0].name] != "") {
+        var sLine = "| ";
+        for (var x = 0; x < data.header.length; x++) {
+          if (data.header[x].show) {
+            sLine += data.data[i][data.header[x].name] + " | ";
+          }
+        }
+        result.sResult += sLine.trim() + "\\n";
+      }
+    }
+
+    if (data.data.length > maxRows) {
+      result.sResult += "\\n_(rÃ©sultats tronquÃ©s â voir le rapport complet dans Flexera)_\\n";
+    }
+  EOS
+end
+
+
+###############################################################################
+# Policy
+###############################################################################
+
+policy "pol_fnms_report_policy" do
+  validate $ds_json2markdowntable do
+    summary_template "FlexNet Manager Report - {{data.name}}"
+    detail_template <<-EOS
+{{data.sResult}}
+    EOS
+    check eq(1, 0) # Always fails to trigger escalation
+    escalate $esc_send_report
+  end
+end
+
+###############################################################################
+# Escalations
+###############################################################################
+
+escalation "esc_send_report" do
+  automatic true
+  label "Send Email"
+  description "Send incident email"
+  email $param_email
+end
