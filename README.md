@@ -36,4 +36,8 @@ This Policy Template (`.pt` JSON) for Flexera One automates extraction and forma
 - Monitor token expiry in **Automation → Credentials**; refresh the token at least every 30 days.
 
 ## 📞 Support  
-For issues or enhancement requests, please open a GitHub Issue or contact the License Management team at
+For issues or enhancement requests, please open a GitHub Issue or contact the License Management team at `lizenz@btc-ag.com`.  
+
+---
+
+*Built by Wassim Cheniti, BTC IT Services GmbH*  
